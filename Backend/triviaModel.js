@@ -15,17 +15,27 @@ Rules:
 
 async function askDeepSeek(message) {
     try {
-        const response = await axios.post("http://localhost:11434/api/generate", {
-            model: "deepseek",
+        const response = await axios.post("http://localhost:11434/api/chat", {
+            model: "deepseek-r1:1.5b",
             prompt: `${SYSTEM_PROMPT}\nUser: ${message}\nAI: `,
             stream: false
         });
-
-        return response.data.response.trim();
+        console.log("Full API response:", response.data);
+        if (response.data.message && response.data.message.content) {
+            return response.data.message.content.trim();
+        } else {
+            console.error("Received empty content from the model.");
+            return "The trivia master is confused. Please try again.";
+        }
     } catch (error) {
-        console.error("Error calling DeepSeek R1:", error.message);
+        console.error("Error calling DeepSeek R1:", error.response ? error.response.data : error.message);
         return "Oops! The trivia master is taking a nap. Try again.";
     }
 }
 
-module.exports = { askDeepSeek };
+async function startGame() {
+    const initialMessage = "Welcome to the Trivia Game! Please choose 6 categories.";
+    return await askDeepSeek(initialMessage);
+}
+
+module.exports = { askDeepSeek, startGame };
