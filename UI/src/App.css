@@ -1,0 +1,30 @@
+.app {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+}
+
+.chat {
+    border: 1px solid #ccc;
+    padding: 10px;
+    height: 400px;
+    overflow-y: auto;
+}
+
+.ai-message {
+    color: blue;
+}
+
+.user-message {
+    color: green;
+}
+
+input {
+    width: calc(100% - 100px);
+    padding: 10px;
+}
+
+button {
+    padding: 10px;
+}

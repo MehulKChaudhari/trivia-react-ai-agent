@@ -1,85 +1,131 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const { askDeepSeek, startGame } = require('./triviaModel');
+// server.js
+import express from 'express';
+import cors from 'cors';
+import { Ollama } from 'ollama';
 
 const app = express();
-const PORT = 4000;
+const port = 3001;
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-let gameState = {
-    categories: [],
-    score: 0,
-    emojis: [],
-    currentQuestion: null,
-    level: 1, // Tracks question difficulty
-};
+const ollama = new Ollama();
 
-// Start the game and explain the rules
-app.get('/start', async (req, res) => {
-    try {
-        const response = await startGame();
-        res.json({ response });
-    } catch (error) {
-        console.error('Error starting the game:', error);
-        res.status(500).json({ message: 'Oops! The trivia master is taking a nap. Try again.' });
-    }
-});
+const systemPrompt = `You are a snarky trivia host. Follow these rules exactly:
 
-// Set categories
-app.post('/set-categories', (req, res) => {
-    const { categories } = req.body;
-    if (categories.length !== 6) {
-        return res.status(400).json({
-            message: 'Choose exactly 6 categories or face the wrath of trivia sarcasm.',
-        });
-    }
-    gameState.categories = categories;
-    res.json({ message: `Great! Your categories are: ${categories.join(', ')}. Ready for your first question?` });
-});
+1. Start by greeting and asking player to choose from these categories: History, Science, Pop Culture, Geography, Sports, Literature
+2. After they choose categories, ask only ONE question at a time
+3. Wait for their answer, then:
+   - If correct: Give a sarcastic congratulation and award an emoji
+   - If incorrect: Mock them gently and give the right answer
+4. Then ask the next single question
+5. Make questions progressively harder
+6. Game ends after 5 correct answers (victory) or if player gives up
 
-// Ask a question (using Ollama to generate it)
-app.post('/ask', async (req, res) => {
-    const { message } = req.body;
-    if (!message) {
-        return res.status(400).json({ error: 'Message is required.' });
-    }
+Format your responses exactly like this:
+- For category selection: "[CATEGORIES] Pick 6 categories:"
+- For a question: "[QUESTION] Your single question here"
+- For correct answer: "[CORRECT] Your sarcastic praise + emoji"
+- For wrong answer: "[INCORRECT] Your mocking response"
+- For game end: "[GAME_OVER] Final message"
 
-    try {
-        const response = await askDeepSeek(message);
-        res.json({ response });
-    } catch (error) {
-        console.error('Error processing AI response:', error);
-        res.status(500).json({ message: 'Oops! The trivia master is taking a nap. Try again.' });
-    }
-});
+Important: Only ask ONE question at a time and wait for the answer!`;
 
-// Submit an answer
-app.post('/submit-answer', async (req, res) => {
-    const { answer } = req.body;
+function parseResponse(response, currentGameState) {
+    const content = response.message.content;
+    const newGameState = { ...currentGameState };
 
-    // Check answer via Ollama
-    try {
-        const response = await askDeepSeek(answer);
-        if (response.toLowerCase().includes('correct')) {
-            gameState.score++;
-            gameState.emojis.push('🎉');
-            gameState.level++;
-            res.json({
-                message: `Correct! You earned an emoji! 🎉 Current score: ${gameState.score}. Ready for the next one?`,
-            });
-        } else {
-            res.json({
-                message: `Wrong! No emoji for you. 😏 The answer was probably obvious... Next question?`,
-            });
+    if (content.includes('[CATEGORIES_SELECTED]')) {
+        const categoryMatches = content.match(/\[([^\]]+)\]/g);
+        if (categoryMatches) {
+            const categories = categoryMatches
+                .filter(cat => cat !== '[CATEGORIES_SELECTED]')
+                .map(cat => cat.replace(/[\[\]]/g, ''));
+            newGameState.categories = categories;
+            newGameState.gameStarted = true;
         }
-    } catch (err) {
-        res.status(500).json({ error: 'Error checking the answer' });
+    }
+
+    if (content.includes('[CORRECT]')) {
+        newGameState.score += 1;
+        const emojis = ['🌟', '🏆', '💫', '🎯', '🎮'];
+        if (newGameState.emojis.length < 5) {
+            newGameState.emojis.push(emojis[newGameState.emojis.length]);
+        }
+        newGameState.difficulty = Math.min(5, newGameState.difficulty + 1);
+        newGameState.lastAnswer = 'correct';
+    }
+
+    if (content.includes('[INCORRECT]')) {
+        newGameState.difficulty = Math.min(5, newGameState.difficulty + 1);
+        newGameState.lastAnswer = 'incorrect';
+    }
+
+    if (content.includes('[GAME_OVER]') || newGameState.emojis.length >= 5) {
+        newGameState.isGameOver = true;
+    }
+
+    const questionMatch = content.match(/\[QUESTION\](.*?)(\[|$)/s);
+    if (questionMatch) {
+        newGameState.currentQuestion = questionMatch[1].trim();
+        newGameState.lastAnswer = null;
+    }
+
+    return newGameState;
+}
+
+app.post('/api/start-game', async (req, res) => {
+    try {
+        const initialMessage = {
+            role: 'assistant',
+            content: '[CATEGORIES] Pick 6 categories from: History, Science, Pop Culture, Geography, Sports, Literature'
+        };
+
+        res.json({
+            response: initialMessage.content,
+            gameState: {
+                score: 0,
+                emojis: [],
+                categories: [],
+                gameStarted: false,
+                currentQuestion: null,
+                difficulty: 1,
+                isGameOver: false,
+                lastAnswer: null
+            }
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message, gameState } = req.body;
+
+        const response = await ollama.chat({
+            model: 'deepseek-r1:1.5b',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'assistant', content: gameState.currentQuestion || '' },
+                { role: 'user', content: message }
+            ],
+            stream: false
+        });
+
+        const updatedGameState = parseResponse(response, gameState);
+
+        res.json({
+            response: response.message.content,
+            gameState: updatedGameState
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
 });
